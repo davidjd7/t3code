@@ -1,11 +1,13 @@
 import type {
   DesktopAppActivationFailure,
+  DesktopAppActivationPlatform,
   DesktopAppActivationRequest,
   DesktopAppActivationResponse,
   EnvironmentId,
   ExecutionEnvironmentPlatformOs,
   ProjectId,
   ScopedProjectRef,
+  ScopedThreadRef,
   ThreadId,
 } from "@t3tools/contracts";
 
@@ -21,6 +23,9 @@ export interface DesktopAppActivationTarget {
 }
 
 export interface DesktopAppActivationDependencies {
+  readonly isEnvironmentReady: (environmentId: EnvironmentId) => boolean;
+  readonly findThread: (threadRef: ScopedThreadRef) => { readonly projectId: ProjectId } | null;
+  readonly navigateToThread: (threadRef: ScopedThreadRef) => Promise<ScopedThreadRef | null>;
   readonly getTarget: () => DesktopAppActivationTarget | null;
   readonly findProject: (
     environmentId: EnvironmentId,
@@ -45,7 +50,7 @@ function failure(
 }
 
 function desktopPlatformToEnvironmentOs(
-  platform: DesktopAppActivationRequest["platform"],
+  platform: DesktopAppActivationPlatform,
 ): ExecutionEnvironmentPlatformOs {
   return platform === "win32" ? "windows" : platform;
 }
@@ -58,6 +63,51 @@ export async function handleDesktopAppActivationRequest(
   request: DesktopAppActivationRequest,
   dependencies: DesktopAppActivationDependencies,
 ): Promise<DesktopAppActivationResponse> {
+  if (request.type === "open-thread") {
+    const threadRef = { environmentId: request.environmentId, threadId: request.threadId };
+    if (!dependencies.isEnvironmentReady(threadRef.environmentId)) {
+      return failure(
+        request.requestId,
+        "environment-unavailable",
+        "The requested environment is not connected and synchronized.",
+      );
+    }
+    const thread = dependencies.findThread(threadRef);
+    if (thread === null) {
+      return failure(
+        request.requestId,
+        "thread-not-found",
+        "The requested thread does not exist in this environment.",
+      );
+    }
+    try {
+      const opened = await dependencies.navigateToThread(threadRef);
+      if (
+        opened?.environmentId !== threadRef.environmentId ||
+        opened.threadId !== threadRef.threadId
+      ) {
+        return failure(
+          request.requestId,
+          "thread-open-failed",
+          "T3 Code did not navigate to the requested thread.",
+        );
+      }
+      return {
+        version: 1,
+        requestId: request.requestId,
+        ok: true,
+        ...threadRef,
+        projectId: thread.projectId,
+      };
+    } catch (error) {
+      return failure(
+        request.requestId,
+        "thread-open-failed",
+        errorMessage(error, "T3 Code could not open the requested thread."),
+      );
+    }
+  }
+
   const target = dependencies.getTarget();
   if (target === null) {
     return failure(

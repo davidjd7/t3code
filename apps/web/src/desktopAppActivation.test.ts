@@ -22,6 +22,9 @@ function dependencies(
   overrides: Partial<DesktopAppActivationDependencies> = {},
 ): DesktopAppActivationDependencies {
   return {
+    isEnvironmentReady: () => true,
+    findThread: () => ({ projectId: existingProjectId }),
+    navigateToThread: vi.fn(async (ref) => ref),
     getTarget: () => ({ environmentId, platform: "linux" }),
     findProject: () => ({
       id: existingProjectId,
@@ -103,5 +106,104 @@ describe("desktop app activation", () => {
       message: "Project path is not available.",
     });
     expect(openThread).not.toHaveBeenCalled();
+  });
+});
+
+describe("desktop activation of an existing thread", () => {
+  const remoteId = EnvironmentId.make("remote");
+  const openRequest = {
+    version: 1,
+    requestId: "open-existing",
+    type: "open-thread",
+    environmentId: remoteId,
+    threadId,
+  } as const;
+
+  it("selects the exact environment and thread even with duplicate IDs, without creating anything", async () => {
+    const records = [
+      { environmentId, threadId, projectId: createdProjectId, title: "Same title" },
+      { environmentId: remoteId, threadId, projectId: existingProjectId, title: "Same title" },
+    ];
+    const deps = dependencies({
+      getTarget: vi.fn(() => null), // No local primary server is required.
+      findThread: (ref) =>
+        records.find(
+          (row) => row.environmentId === ref.environmentId && row.threadId === ref.threadId,
+        ) ?? null,
+    });
+    const response = await handleDesktopAppActivationRequest(openRequest, deps);
+    expect(response).toEqual({
+      version: 1,
+      requestId: openRequest.requestId,
+      ok: true,
+      environmentId: remoteId,
+      threadId,
+      projectId: existingProjectId,
+    });
+    expect(deps.navigateToThread).toHaveBeenCalledWith({ environmentId: remoteId, threadId });
+    expect(deps.getTarget).not.toHaveBeenCalled();
+    expect(deps.createProject).not.toHaveBeenCalled();
+    expect(deps.openThread).not.toHaveBeenCalled();
+  });
+
+  it.each(["offline", "missing"] as const)(
+    "does not navigate or create for an %s target",
+    async (kind) => {
+      const deps = dependencies({
+        isEnvironmentReady: () => kind !== "offline",
+        findThread: () => null,
+      });
+      expect(await handleDesktopAppActivationRequest(openRequest, deps)).toMatchObject({
+        ok: false,
+        code: kind === "offline" ? "environment-unavailable" : "thread-not-found",
+      });
+      expect(deps.navigateToThread).not.toHaveBeenCalled();
+      expect(deps.createProject).not.toHaveBeenCalled();
+      expect(deps.openThread).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    null,
+    { environmentId, threadId },
+    { environmentId: remoteId, threadId: ThreadId.make("wrong-thread") },
+  ])("rejects a navigation which ended on another route (%j)", async (opened) => {
+    const deps = dependencies({ navigateToThread: async () => opened });
+    expect(await handleDesktopAppActivationRequest(openRequest, deps)).toMatchObject({
+      ok: false,
+      code: "thread-open-failed",
+    });
+  });
+
+  it("does not acknowledge success before navigation completes", async () => {
+    let complete!: (value: { environmentId: typeof remoteId; threadId: typeof threadId }) => void;
+    const navigation = new Promise<{ environmentId: typeof remoteId; threadId: typeof threadId }>(
+      (resolve) => {
+        complete = resolve;
+      },
+    );
+    const deps = dependencies({ navigateToThread: () => navigation });
+    let acknowledged = false;
+    const response = handleDesktopAppActivationRequest(openRequest, deps).then((result) => {
+      acknowledged = true;
+      return result;
+    });
+    await Promise.resolve();
+    expect(acknowledged).toBe(false);
+    complete({ environmentId: remoteId, threadId });
+    expect(await response).toMatchObject({ ok: true });
+  });
+
+  it("returns a failure if navigation throws", async () => {
+    const deps = dependencies({
+      navigateToThread: async () => {
+        throw new Error("Navigation failed");
+      },
+    });
+    expect(await handleDesktopAppActivationRequest(openRequest, deps)).toMatchObject({
+      ok: false,
+      code: "thread-open-failed",
+      message: "Navigation failed",
+    });
   });
 });

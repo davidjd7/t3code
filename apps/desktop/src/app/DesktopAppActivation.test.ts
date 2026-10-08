@@ -5,6 +5,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import {
+  EnvironmentId,
   ProjectId,
   ThreadId,
   type DesktopAppActivationRequest,
@@ -110,6 +111,18 @@ describe("desktop app control server", () => {
         const response = await exchange(target.address, request("request-1", platform));
 
         expect(received).toHaveLength(1);
+        const openThreadRequest = {
+          version: 1,
+          requestId: "open-exact-thread",
+          type: "open-thread",
+          environmentId: EnvironmentId.make("remote"),
+          threadId: ThreadId.make("existing"),
+        } as const;
+        expect(await exchange(target.address, openThreadRequest)).toMatchObject({
+          ok: true,
+          requestId: "open-exact-thread",
+        });
+        expect(received[1]).toEqual(openThreadRequest);
         expect(response).toMatchObject({ ok: true, requestId: "request-1" });
         await server.close();
         openServers.splice(openServers.indexOf(server), 1);
