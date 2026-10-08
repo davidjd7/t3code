@@ -82,8 +82,9 @@ const make = Effect.gen(function* () {
   });
 
   const load = Effect.fn("desktop.legacyLocalStorage.load")(function* (userDataPath: string) {
-    // Development already shares its profile between versions.
-    if (environment.isDevelopment) return;
+    // An explicit isolated profile must never import the user's normal drafts,
+    // credentials or settings. Development already shares its own profile.
+    if (environment.isDevelopment || environment.desktopUserDataDirectory) return;
     const marker = path.join(userDataPath, MARKER_FILE_NAME);
     if (yield* fs.exists(marker).pipe(Effect.orElseSucceed(() => true))) return;
     yield* Ref.set(markerPath, Option.some(marker));

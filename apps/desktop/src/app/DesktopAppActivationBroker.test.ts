@@ -22,7 +22,7 @@ describe("DesktopAppActivationBroker", () => {
     expect(send).not.toHaveBeenCalled();
 
     broker.registerRenderer(send);
-    expect(send).toHaveBeenCalledWith(request);
+    expect(send).toHaveBeenCalledWith(expect.objectContaining(request));
     broker.complete({
       version: 1,
       requestId: request.requestId,
@@ -61,7 +61,7 @@ describe("DesktopAppActivationBroker", () => {
     expect(nextSend).not.toHaveBeenCalled();
 
     broker.registerRenderer(nextSend);
-    expect(nextSend).toHaveBeenCalledWith(request);
+    expect(nextSend).toHaveBeenCalledWith(expect.objectContaining(request));
     broker.complete({
       version: 1,
       requestId: request.requestId,
@@ -96,7 +96,7 @@ describe("DesktopAppActivationBroker", () => {
     const firstResponse = broker.request(request);
     const secondResponse = broker.request(secondRequest);
     expect(send).toHaveBeenCalledTimes(1);
-    expect(send).toHaveBeenLastCalledWith(request);
+    expect(send).toHaveBeenLastCalledWith(expect.objectContaining(request));
 
     broker.cancel(secondRequest.requestId);
     broker.complete({
@@ -122,6 +122,60 @@ describe("DesktopAppActivationBroker", () => {
       await vi.advanceTimersByTimeAsync(1_000);
 
       await expect(response).resolves.toMatchObject({ ok: false, code: "request-timeout" });
+      broker.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("forwards the deadline counted from the CLI request, not from renderer readiness", async () => {
+    const start = 1_000_000;
+    vi.useFakeTimers({ now: start });
+    try {
+      const send = vi.fn();
+      const broker = new DesktopAppActivationBroker({
+        requestTimeoutMs: 15_000,
+        activate: vi.fn(),
+      });
+      const response = broker.request(request);
+
+      await vi.advanceTimersByTimeAsync(12_000);
+      broker.registerRenderer(send);
+      expect(send).toHaveBeenCalledWith({ ...request, deadlineAt: start + 15_000 });
+
+      await vi.advanceTimersByTimeAsync(3_000);
+      await expect(response).resolves.toMatchObject({ ok: false, code: "request-timeout" });
+      broker.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("lets a client shorten its deadline but never extend it", async () => {
+    const start = 1_000_000;
+    vi.useFakeTimers({ now: start });
+    try {
+      const send = vi.fn();
+      const broker = new DesktopAppActivationBroker({
+        requestTimeoutMs: 15_000,
+        activate: vi.fn(),
+      });
+      broker.registerRenderer(send);
+
+      const extended = broker.request({ ...request, deadlineAt: start + 60_000 });
+      expect(send).toHaveBeenLastCalledWith({ ...request, deadlineAt: start + 15_000 });
+      await vi.advanceTimersByTimeAsync(15_000);
+      await expect(extended).resolves.toMatchObject({ ok: false, code: "request-timeout" });
+
+      const shortenedRequest = {
+        ...request,
+        requestId: "request-2",
+        deadlineAt: start + 15_000 + 2_000,
+      };
+      const shortened = broker.request(shortenedRequest);
+      expect(send).toHaveBeenLastCalledWith(shortenedRequest);
+      await vi.advanceTimersByTimeAsync(2_000);
+      await expect(shortened).resolves.toMatchObject({ ok: false, code: "request-timeout" });
       broker.close();
     } finally {
       vi.useRealTimers();

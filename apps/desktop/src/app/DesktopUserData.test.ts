@@ -7,6 +7,21 @@ import * as PlatformError from "effect/PlatformError";
 
 import { resolveUserDataPath } from "./DesktopUserData.ts";
 
+it.effect("isolates a preview profile without inspecting or copying the installed profile", () =>
+  Effect.gen(function* () {
+    const result = yield* resolveUserDataPath({
+      appDataDirectory: "/installed-profile",
+      isDevelopment: false,
+      platform: "darwin",
+      desktopUserDataDirectory: "/preview/electron",
+    });
+    assert.equal(result, "/preview/electron");
+  }).pipe(
+    Effect.provide(NodeServices.layer),
+    Effect.provideService(FileSystem.FileSystem, FileSystem.makeNoop({})),
+  ),
+);
+
 it.effect("identifies a failed source read and preserves its cause", () => {
   const sourceState = "/profiles/t3code/Local State";
   const cause = PlatformError.systemError({

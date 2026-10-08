@@ -228,7 +228,11 @@ function RootRouteView() {
           hostedStatic={authGateState.status === "hosted-static"}
         >
           {primaryEnvironmentAuthenticated ? <AuthenticatedTracingBootstrap /> : null}
-          {primaryEnvironmentAuthenticated ? <DesktopAppActivationCoordinator /> : null}
+          {/* Hosted-static covers a desktop without its local server: remote
+              connections stay addressable, so app activation must too. */}
+          <DesktopAppActivationCoordinator
+            primaryEnvironmentExpected={primaryEnvironmentAuthenticated}
+          />
           {isElectron ? <RunningThreadKeepAlive /> : null}
           <RelayClientInstallDialog />
           <ConnectOnboardingDialog />

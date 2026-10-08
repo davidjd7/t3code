@@ -34,12 +34,18 @@ export class DesktopAppActivationBroker {
   readonly #pending = new Map<string, PendingActivation>();
   readonly #requestTimeoutMs: number;
   readonly #activate: () => void;
+  readonly #now: () => number;
   #renderer: RendererSender | null = null;
   #closed = false;
 
-  constructor(input: { readonly requestTimeoutMs: number; readonly activate: () => void }) {
+  constructor(input: {
+    readonly requestTimeoutMs: number;
+    readonly activate: () => void;
+    readonly now?: () => number;
+  }) {
     this.#requestTimeoutMs = input.requestTimeoutMs;
     this.#activate = input.activate;
+    this.#now = input.now ?? Date.now;
   }
 
   request(request: DesktopAppActivationRequest): Promise<DesktopAppActivationResponse> {
@@ -54,18 +60,33 @@ export class DesktopAppActivationBroker {
       );
     }
 
+    // The deadline starts with the CLI request, not when the renderer becomes
+    // ready, and travels with the request so the renderer never starts a
+    // navigation once the caller has been told it timed out. A client may
+    // shorten it but never extend it.
+    const now = this.#now();
+    const brokerDeadlineAt = now + this.#requestTimeoutMs;
+    const deadlineAt =
+      request.deadlineAt === undefined
+        ? brokerDeadlineAt
+        : Math.min(request.deadlineAt, brokerDeadlineAt);
+    const forwarded: DesktopAppActivationRequest = { ...request, deadlineAt };
+
     const response = new Promise<DesktopAppActivationResponse>((resolve) => {
-      const timeout = setTimeout(() => {
-        this.#settle(
-          failure(
-            request.requestId,
-            "request-timeout",
-            "The desktop app did not finish opening the project in time.",
-          ),
-        );
-      }, this.#requestTimeoutMs);
+      const timeout = setTimeout(
+        () => {
+          this.#settle(
+            failure(
+              request.requestId,
+              "request-timeout",
+              "The desktop app did not finish opening the project in time.",
+            ),
+          );
+        },
+        Math.max(0, deadlineAt - now),
+      );
       this.#pending.set(request.requestId, {
-        request,
+        request: forwarded,
         resolve,
         timeout,
         dispatched: false,
