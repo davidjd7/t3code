@@ -159,13 +159,34 @@ export const stopAllPoolInstances = Effect.fn("desktop.app.stopAllPoolInstances"
   },
 );
 
+// The `t3 app` control socket runs for the rest of the app scope. A failure
+// only disables `t3 app`, so it is logged instead of stopping startup.
+const startDesktopAppControl = Effect.gen(function* () {
+  const appActivation = yield* DesktopAppActivation.DesktopAppActivation;
+  yield* appActivation.start.pipe(
+    Effect.tap(() => logBootstrapInfo("desktop app control socket ready")),
+    Effect.catch((error) => logStartupError("desktop app control socket unavailable", { error })),
+  );
+});
+
+// Without a local backend the renderer only talks to remote environments, but
+// `t3 app` still reaches it through the control socket.
+export const bootstrapRemoteOnly = Effect.gen(function* () {
+  const state = yield* DesktopState.DesktopState;
+  const desktopWindow = yield* DesktopWindow.DesktopWindow;
+  yield* logBootstrapInfo("bootstrap skipping local environment (disabled in settings)");
+  if (!(yield* Ref.get(state.quitting))) {
+    yield* desktopWindow.createMainIfBackendReady;
+    yield* startDesktopAppControl;
+  }
+});
+
 const bootstrap = Effect.gen(function* () {
   const state = yield* DesktopState.DesktopState;
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const desktopSettings = yield* DesktopAppSettings.DesktopAppSettings;
   const desktopWindow = yield* DesktopWindow.DesktopWindow;
   const snapShot = yield* DesktopSnapShot.DesktopSnapShot;
-  const appActivation = yield* DesktopAppActivation.DesktopAppActivation;
   yield* logBootstrapInfo("bootstrap start");
 
   const settings = yield* desktopSettings.get;
@@ -189,11 +210,7 @@ const bootstrap = Effect.gen(function* () {
   yield* snapShot.initialize;
 
   if (!settings.localEnvironmentEnabled) {
-    yield* logBootstrapInfo("bootstrap skipping local environment (disabled in settings)");
-    if (!(yield* Ref.get(state.quitting))) {
-      yield* desktopWindow.createMainIfBackendReady;
-    }
-    return;
+    return yield* bootstrapRemoteOnly;
   }
 
   const pool = yield* DesktopBackendPool.DesktopBackendPool;
@@ -251,10 +268,7 @@ const bootstrap = Effect.gen(function* () {
     }
     yield* primaryBackend.start;
     yield* logBootstrapInfo("bootstrap backend start requested");
-    yield* appActivation.start.pipe(
-      Effect.tap(() => logBootstrapInfo("desktop app control socket ready")),
-      Effect.catch((error) => logStartupError("desktop app control socket unavailable", { error })),
-    );
+    yield* startDesktopAppControl;
     // Bring up the WSL backend if the user previously enabled it. The
     // primary is already starting; reconcile fires off the WSL register
     // in parallel rather than blocking primary readiness on a possibly
